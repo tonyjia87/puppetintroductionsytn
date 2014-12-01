@@ -401,8 +401,56 @@ init.pp的内容
 
 	defined 'message' as 'This VM`s IP address is 192.168.2.11,running SLES !!! '
 
-对于facter的值，pp文件在引用主机自己fact值的时候 使用 `${fact}` 格式。
+对于facter的值，pp文件在引用主机自己fact值的时候，并且在引号内 使用 `${fact}` 格式。不再引号内使用 `$::fact`格式。 
 
 
 ##判断条件
 
+这里介绍不会很全面，因为puppet的条件语句 `if` 和 `unless`是相反的意义，一样的结构。所以只介绍`if`。判断语句`case`和linux 的case一样用法。`selector`是一个小型的判断语句，这会介绍。
+
+if语句结构：
+
+	if condition {
+  	  block of code
+	}
+	elsif condition {
+  	  block of code
+	}
+	else {
+  	  block of code
+	}
+
+if语句中状态其实是靠boolean判断，简单说就是true和false的结果。不同的对象有不同的定义，条件语句中不同于linux会做一个计算后，将0和1做结果去判断。因为puppet是声明语言，只做描述，如你要做什么！你要怎么去做！，不会思考。如果你要思考就要用facter去判断，或者lib库中加入自己的判断函数。
+
+* **字符串（strings）** ：空的字符串就是false，其他就是true。原生态的puppet对字符串“false”也是任务true，如果你有需要可以使用stdlib中的`str2bool`做转换。
+* **数值（numbers）**：原生态的puppet对所有数值都是true，包括零。如果你有需要对零作为false可以使用stdlib的`num2bool`。
+* **undef**： 数据类型是undef就是flase，undef就没有定义值，类似python的pass。
+* **数组和哈希（也叫字典）** ：数组和哈希都是true，即使内容是空的。
+
+
+以上提到的lib库，可以参考[stdlib](https://forge.puppetlabs.com/puppetlabs/stdlib "puppetlabs/stdlib") 。由于和puppet语法没有关系，会在后期开发模块上介绍。例外条件中如果需要判断，与或非等功能可以参考[expressions](https://docs.puppetlabs.com/puppet/latest/reference/lang_expressions.html "lang_expressions")。值得一提的是，[“转换”](https://docs.puppetlabs.com/puppet/latest/reference/lang_datatypes.html#automatic-conversion-to-boolean  "conversion")，对常用的类型转换进行总结。
+
+case 判断支持正则表达式
+
+	case $operatingsystem {
+      'Solaris':          { include role::solaris } # apply the solaris class
+      'RedHat', 'CentOS': { include role::redhat  } # apply the redhat class
+      /^(Debian|Ubuntu)$/:{ include role::debian  } # apply the debian class
+      default:            { include role::generic } # apply the generic class
+    }
+
+
+Selectors 和case有一些类似
+
+    $apache = $operatingsystem ? {
+      centos                => 'httpd',
+      redhat                => 'httpd',
+      /(?i)(ubuntu|debian)/ => 'apache2',
+      default               => undef,
+    }
+
+
+Selectors 和case 一般我会用在params.pp文件下，在不同系统不同软件版本上做判断。
+
+##模块
+前面讲到的`Class['ssh']` 其实就应用ssh类的一种手段，但是应用类还可以使用`include`完成。
