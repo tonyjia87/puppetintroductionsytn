@@ -1,6 +1,6 @@
 
 #Puppet 语法简介
-@@TOC@@
+
 
 
 > ##1.   写在前面
@@ -453,4 +453,229 @@ Selectors 和case有一些类似
 Selectors 和case 一般我会用在params.pp文件下，在不同系统不同软件版本上做判断。
 
 ##模块
-前面讲到的`Class['ssh']` 其实就应用ssh类的一种手段，但是应用类还可以使用`include`完成。
+注意：前面讲到的`Class['ssh']` 其实就应用ssh类的应用，是实际干事情的缩写。而引用类可以使用`include`和`contain`完成。应用和引用是puppet的一个特点，如果你写好了子类却只是引用没有应用，那么结果是什么都没有做。`include`和`contain`2种引用区别在于`include`没有逻辑顺序，一堆类就全部引用，而`contain`是具有顺序引用的特点。
+
+下面是一个`syslog_ng_client`模块的结构,manifests存储的pp就是puppet执行对象，init.pp是一定要存在的。
+
+	+---manifests
+	|       config.pp
+	|       init.pp
+	|       install.pp
+	|       params.pp
+	|       service.pp
+	|
+	\---templates
+        	syslog-ng.conf.erb
+
+
+manifests中除了init.pp外还有其他的pp文件，我们把关于参数的写到params.pp中，安装软件部分写到install.pp中，安装后配置文件的动作写到config.pp，如果重启服务器是最后一步，那么我们就把启动服务的操作写到service.pp。
+
+那么其实params.pp就是引用参数，其他的都是有操作性的动作，需要我们应用而且还要指定顺序。
+
+	contain syslog_ng_client::params
+  	contain syslog_ng_client::install
+  	contain syslog_ng_client::config
+  	contain syslog_ng_client::service
+
+ 	 # relationship
+  	Class['syslog_ng_client::install'] ->
+  	Class['syslog_ng_client::config']  ->
+  	Class['syslog_ng_client::service']
+	}
+
+做一个syslog需要哪些参数呢？首先我们需要看客户机是什么平台的，假设只有suse 11 sp3 和 rhel6.4这2个操作系统。那么我们需要参数是操作系统，软件包名，服务器名，配置文件路径，区分配置文件，tcp 还是 udp，端口号，syslog server的地址等。如果使用rpm包安装，其中最后3个参数是是可以选择的，而且也是有需求要灵活改动配置的，那么定位为可变参数，其他的都是默认参数或者叫预先设定的参数。
+
+params.pp内容：
+
+	class syslog_ng_client::params {
+  		case $::osfamily {
+    		'Suse': {
+      			$package_name    = 'syslog-ng'
+     		 	$config_file     = '/etc/syslog-ng/syslog-ng.conf'
+     		 	$service_name    = 'syslog'
+      			$config_template = 'syslog_ng_client/syslog-ng.conf.erb'
+    			}
+    		'RedHat': {
+      			$package_name    = 'rsyslog'
+      			$config_file     = '/etc/rsyslog.conf'
+      			$service_name    = 'rsyslog'
+      			$config_template = 'syslog_ng_client/rsyslog.conf.erb'
+    			}
+    		default: {
+      			fail("${::operatingsystem} ${::operatingsystemrelease} not supported. Review params.pp for extending support.")
+    			}
+  			}
+		}
+
+以上看到的都是预先设定的参数，那么灵活改变的参数在哪里设置？ 如果对一个主机使用一个模块，处理应用那么还可以填写参数，实现的方式有很多，简单的处理方式是卸载init.pp上。
+
+
+    
+    class syslog_ng_client (
+		#（）内是类的参数，
+      $syslog_ng_server,
+      $protocol = tcp,
+      $port = 514,
+      $debug= false,
+    ) {
+      contain syslog_ng_client::params
+    
+      # general parameters，将params.pp中的预先设定的参数引用到init上，这样做是为了在写其它类的时候引用下面参数不用再到syslog_ng_client::params中去取。
+      $package_name= $syslog_ng_client::params::package_name
+      $config_file = $syslog_ng_client::params::config_file
+      $service_name= $syslog_ng_client::params::service_name
+      $config_template = $syslog_ng_client::params::config_template
+    
+      # invoke classes
+      contain syslog_ng_client::install
+      contain syslog_ng_client::config
+      contain syslog_ng_client::service
+    
+      # relationship
+      Class['syslog_ng_client::install'] ->
+      Class['syslog_ng_client::config']  ->
+      Class['syslog_ng_client::service']
+    }
+    
+上面中`contain syslog_ng_client::params`符号`::`其实是表现类的分割符，因为puppet默认情况下只会识别init.pp的内容。
+
+接下来就是按照，配置文件，启动服务了，这个过程极其简单，没有什么逻辑判断。
+
+install.pp
+
+    class syslog_ng_client::install {
+      if $syslog_ng_client::debug {
+    	log{'syslog-ng client install':}
+      }
+    
+      package {'syslog_ng_client':
+    	name => $syslog_ng_client::package_name,
+      }
+    }
+    
+
+config.pp
+    
+    class syslog_ng_client::config {
+      if $syslog_ng_client::debug {
+    	log{'syslog-ng client config':}
+      }
+    
+      file {'syslog_client.conf':
+    	path=> $syslog_ng_client::config_file,
+    	content => template("${syslog_ng_client::config_template}"),
+    	notify  => Service['syslog_ng_client'],
+      }
+    }
+
+service.pp
+    
+    class syslog_ng_client::service {
+      if $syslog_ng_client::debug {
+    	log{'syslog-ng client service':}
+      }
+    
+      service {'syslog_ng_client':
+    	name   => $syslog_ng_client::service_name,
+    	ensure => running,
+    	enable => true,
+      }
+    }
+    
+一个简答的模块就写好了，但是还不能用，上面模块中`install.pp`,`config.pp`,`service.pp`都有一个`log`，看上去像函数，但是不是函数。它是使用define写的一个类。
+
+
+目录结构：
+
+
+    BASE
+    |---log
+    	|---manifests
+    			init.pp
+	├─manifests
+	└─modules
+    |---syslog_ng_client
+		+---manifests
+		|       config.pp
+		|       init.pp
+		|       install.pp
+		|       params.pp
+		|       service.pp
+		|
+		\---templates
+        		syslog-ng.conf.erb
+	├─environment.conf
+
+
+首先上面目录BASE有一个log模块，目录modules有一个syslog_ng_client模块，puppet系统默认使用目录modules，不会去找目录BASE的模块。需要手动创建environment.conf，并填写以下内容：
+
+    modulepath = base:modules
+
+这样log模块才可以被使用。init.pp内容如下：
+
+    define log (
+      $message = ${title},
+    ) {
+      notify { "$(caller_module_name) => ${message}" :
+    	message => "puppet => module: $(caller_module_name), message: $message",
+      }
+      	notice("module: $(caller_module_name) log: $message")
+    }
+
+`${title}`是puppet内置变量，我们前面认识资源的时候提到过。整个define其实就是用了notify资源，这样单独在一个模块中定义的好处在于其他模块就不要每次都要写log这个功能。define是什么？它是定义一组资源的集合，和类有些相同，可以接受参数。但是不同的是define可以无数次被声明和求值。puppet的类是单实例的工作者，不管被其他资源引用包含多少次但使用只能使用一次。而定义（define）就可以使用多次。
+
+如果define 还不能理解，我举一个例子。apache安装后，如果你要什么模块，必须在conf文件中引用模块，你用一个模块你需要安装一次，你用10个模块你需要安装10个mod_开头的模块，假如模块名是参数，你事先也不知道模块要按照几次，那么该怎么办？用define可以解决，下面我们用一个叫modules.pp来给apapche安装模块。
+
+    define apache::module {
+      $module_package_basename = $::osfamily ? {
+    	/(?i:redhat)/ => 'mod_',
+    	default => '',
+      }
+    
+      $module_package_realname = "${module_package_basename}${name}"
+    
+      if $module_package_basename {
+    	package { "apache_module_${name}":
+     	name   => $module_package_realname,
+      	ensure => $apache::package_ensure,
+      	notify => $apache::service_reference,
+      	before => $apache::install_reference,
+    	}
+      }
+    }
+
+`$module_package_realname = "${module_package_basename}${name}"` 生产的字符串就是模块的名称 ，如果你要装10个模块可以有10个不同名称，packege会更加这些软件包名安装。`${title}`和`${name}`是一样的效果，用这个例子来应用下吧。
+
+在install.pp中应用前面的defing：
+
+    class apache::install {
+      ## Managed package
+      if $apache::package {
+    	package { 'apache':
+      	name   => $apache::package,
+      	ensure => $apache::package_ensure,
+    }
+    
+    if $apache::enable_module {
+      	apache::module { $apache::enable_module: }
+    	}
+      }
+    }
+    
+再根据我们前面简单的传参方式，在init.pp中设置灵活变化的部分。
+
+init.pp
+
+    class apache (
+    
+      $enable_module  
+      )
+
+最后在site.pp文件中应用下，写明模块名称（主要不是mod_开头的）
+
+##模板erb
+
+	filename = <%= @fullname %>
+上面 <%= @fullname %>其实就是引用变量名
+
+
